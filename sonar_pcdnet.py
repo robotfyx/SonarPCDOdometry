@@ -9,19 +9,19 @@ class SonarPCDNet(nn.Module):
         # self.pose = pose
 
         ### Siamese Point Feature Pyramid ###
-        self.psa1 = SAModule(npoint=2048, nsample=32, mlp=[0, 32, 32, 64], bn=False)
-        self.psa2 = SAModule(npoint=1024, nsample=32, mlp=[64, 128, 128, 256], bn=False)
-        self.psa3 = SAModule(npoint=256, nsample=16, mlp=[256, 512, 512, 512], bn=False)
+        self.psa1 = SAModule(npoint=2048, nsample=32, mlp=[0, 8, 8, 16], bn=True)
+        self.psa2 = SAModule(npoint=1024, nsample=32, mlp=[16, 16, 16, 32], bn=True)
+        self.psa3 = SAModule(npoint=256, nsample=16, mlp=[32, 32, 32, 64], bn=True)
         # self.psa4 = SAModule(npoint=64, nsample=16, mlp=[512, 512, 512, 512], bn=False)
 
         ### Attentive Cost Volume ###
-        self.cost_volume = CostVolume(nsample=4, nsample_q=32, in_channel1=512, in_channel2=512, mlp1=[128, 256, 512], mlp2=[128, 256, 512])
+        self.cost_volume = CostVolume(nsample=4, nsample_q=32, in_channel1=64, in_channel2=64, mlp1=[128, 64, 64], mlp2=[128, 64])
 
         ### Occupancy Probability Mask ###
-        self.OccMask = OPPredictor(in_channel=512+512, mlp=[128, 256, 512])
+        self.Mask = MaskPredictor(in_channel=64+64, mlp=[128,64])
 
         ### Pose Predictor ###
-        self.PosePredictor = PosePredictor(in_channel=512, out_channel=512)
+        self.PosePredictor = PosePredictor(in_channel=64, out_channel=256)
 
         ### Flow Feature Encoding ###
         # self.flow_feature_encoding = SAModule(npoint=64, nsample=16, mlp=[512, 1024, 1024, 512], bn=False)
@@ -59,10 +59,11 @@ class SonarPCDNet(nn.Module):
 
         ### Flow Feature Encoding ###
         # _, embedding_features = self.flow_feature_encoding(new_xyz_f1_3, flow_embedding) # [B, 64, 3] [B, 512, 64]
-        occmask = self.OccMask(new_features_f1_3_t, cost_volume) # [B, 512, 256]
+        mask = self.Mask(new_features_f1_3_t, cost_volume) # [B, 512, 256]
+        mask = F.softmax(mask, dim=2)
 
         ### Pose Predictor ###
-        rv, t, points_out = self.PosePredictor(cost_volume, occmask, xyz_f1.shape[1]/10)
+        rv, t, points_out = self.PosePredictor(cost_volume, mask, xyz_f1.shape[1]/10)
 
         return rv, t, points_out
 

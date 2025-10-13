@@ -30,8 +30,8 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     model = SonarPCDNet().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.9)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.95)
     summary_writer = SummaryWriter('/media/kemove/043E0D933E0D7F44/Sonar_Diffusion_SLAM/trainlog/exp1')
     Epochs = 100
 
@@ -42,7 +42,7 @@ if __name__ == '__main__':
         rvloss_train = 0.0
         tloss_train = 0.0
         emd_train = 0.0
-        cyc_train = 0.0
+        # cyc_train = 0.0
         # var_train = 0.0
         model.train()
         for i, (pcd1, pcd2, f1, f2, rv, t, pts1_gt, pts2_gt) in tqdm(enumerate(train_dataloader), total=train_size):
@@ -63,13 +63,13 @@ if __name__ == '__main__':
             
             # 1->2
             rv12_pre, t12_pre, pts1_pre = model(pcd1, f1, pcd2, f2)
-            r12pre = rotvec2mat(rv12_pre)
+            # r12pre = rotvec2mat(rv12_pre)
 
             rv12_loss = torch.norm(rv12_pre-rv, dim=1).mean() #nn.MSELoss()(rv12_pre, rv)#rotation_matrix_loss(r12pre, rgt)#
             t12_loss = torch.norm(t12_pre-t, dim=1).mean()
             # cd = chamfer_distance(pts_pre, pts_gt)
             emd12 = sinkhorn_emd(pts1_gt, pts1_pre)
-            
+            '''
             # 2->1
             rv21_pre, t21_pre, pts2_pre = model(pcd2, f2, pcd1, f1)
             emd21 = sinkhorn_emd(pts2_gt, pts2_pre)
@@ -83,33 +83,33 @@ if __name__ == '__main__':
             T21[:3, :3] = rotvec2mat(rv21_pre)
             T21[:3, 3] = t21_pre.squeeze(0)
             cyc_loss = torch.sum(torch.abs(T12 @ T21-torch.eye(4, device=device, dtype=torch.float32)))
-
-            loss = 10*rv12_loss+t12_loss+emd12+emd21+0.1*cyc_loss
+            '''
+            loss = rv12_loss+t12_loss+emd12#+emd21+0.1*cyc_loss
 
             rvloss_train += rv12_loss
             tloss_train += t12_loss
-            emd_train += emd12+emd21
-            cyc_train += cyc_loss
+            emd_train += emd12#+emd21
+            # cyc_train += cyc_loss
             # var_train += var_loss*0.5
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            # for name, param in model.named_parameters():
-            #     if param.grad is not None:
-            #         print(name, param.grad.abs().mean().item())
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    print(name, param.grad.abs().mean().item())
         scheduler.step()
         torch.cuda.empty_cache()
 
         rvloss_train = rvloss_train/train_size
         tloss_train = tloss_train/train_size
         emd_train = emd_train/train_size
-        cyc_train = cyc_train/train_size
+        # cyc_train = cyc_train/train_size
         # var_train = var_train/train_size
         summary_writer.add_scalar('train/rvloss', rvloss_train, epoch)
         summary_writer.add_scalar('train/tloss', tloss_train, epoch)
         summary_writer.add_scalar('train/emd', emd_train, epoch)
-        summary_writer.add_scalar('train/cyc', cyc_train, epoch)
+        # summary_writer.add_scalar('train/cyc', cyc_train, epoch)
         # summary_writer.add_scalar('train/var', var_train, epoch)
         
         print('start testing:')

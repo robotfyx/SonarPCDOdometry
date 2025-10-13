@@ -1,9 +1,8 @@
 import torch
 import torch.nn as nn
-from .pcdnet_utils import SharedMLP, gather_operation, furthest_point_sample, knn_point, grouping_operation, Conv1d
+from .pcdnet_utils import SharedMLP, gather_operation, furthest_point_sample, knn_point, grouping_operation
 from typing import Optional
 from torch.nn import functional as F
-from .pose import Pose
 import math
 
 class SAModule(nn.Module):
@@ -62,19 +61,19 @@ class CostVolume(nn.Module):
         # self.in_channel = [in_channel1, in_channel2, 10]
 
         mlp1_spec = [in_channel1+in_channel2+10]+mlp1
-        self.mlp_convs = SharedMLP(mlp1_spec, bn=False, init=nn.init.xavier_uniform_)
+        self.mlp_convs = SharedMLP(mlp1_spec, bn=True, init=nn.init.xavier_uniform_)
         mlp_spec_xyz_1 = [10, mlp1[-1]]
-        self.mlp_conv_xyz_1 = SharedMLP(mlp_spec_xyz_1, bn=False, init=nn.init.xavier_uniform_)
+        self.mlp_conv_xyz_1 = SharedMLP(mlp_spec_xyz_1, bn=True, init=nn.init.xavier_uniform_)
         mlp_spec_xyz_2 = [10, mlp2[-1]]
-        self.mlp_conv_xyz_2 = SharedMLP(mlp_spec_xyz_2, bn=False, init=nn.init.xavier_uniform_)
+        self.mlp_conv_xyz_2 = SharedMLP(mlp_spec_xyz_2, bn=True, init=nn.init.xavier_uniform_)
 
         # concatenating 3D Euclidean space encoding and first flow embeddings
         last_channel2 = mlp1_spec[-1] * 2 
         mlp2_spec = [last_channel2] + mlp2
-        self.mlp2_convs = SharedMLP(mlp2_spec, bn=False, init=torch.nn.init.xavier_uniform_)
+        self.mlp2_convs = SharedMLP(mlp2_spec, bn=True, init=torch.nn.init.xavier_uniform_)
         last_channel3 = mlp1_spec[-1] * 2 + in_channel1   
         mlp3_spec = [last_channel3] + mlp2
-        self.mlp3_convs = SharedMLP(mlp3_spec, bn=False, init=torch.nn.init.xavier_uniform_)
+        self.mlp3_convs = SharedMLP(mlp3_spec, bn=True, init=torch.nn.init.xavier_uniform_)
         self.out_channel = mlp3_spec[-1]
     
     def forward(self, xyz1:torch.Tensor, feature1:torch.Tensor, xyz2:torch.Tensor, feature2:torch.Tensor):
@@ -155,12 +154,12 @@ class CostVolume(nn.Module):
 
         return pc_feat1_new
 
-class OPPredictor(nn.Module):
+class MaskPredictor(nn.Module):
     def __init__(self, in_channel, mlp):
         super().__init__()
         # self.in_channel = [in_channel]
         mlp_spec = [in_channel]+mlp
-        self.mlp_convs = SharedMLP(mlp_spec, bn=False, init=nn.init.xavier_uniform_)
+        self.mlp_convs = SharedMLP(mlp_spec, bn=True, init=nn.init.xavier_uniform_)
         # self.out_channel = mlp_spec[-1]
 
     def forward(self, feature1:torch.Tensor, cost_volume:torch.Tensor, upsampled_feat=None):
@@ -174,9 +173,9 @@ class OPPredictor(nn.Module):
         points_concat = self.mlp_convs(points_concat) # [B, mlp[-1], N, 1]                                        
         points_concat = torch.squeeze(points_concat, dim=3) # [B, mlp[-1], N]
 
-        # OP = F.softmax(points_concat, dim=1) # [B, mlp[-1], N]
-        OP = F.sigmoid(points_concat)
-        return OP #points_concat
+        # OP = F.softmax(points_concat, dim=2) # [B, mlp[-1], N]
+        # OP = F.sigmoid(points_concat)
+        return points_concat
     
 class PosePredictor(nn.Module):
     def __init__(self, in_channel:int, out_channel:int):
@@ -227,7 +226,37 @@ class PosePredictor(nn.Module):
             nn.ReLU(),
             nn.Conv2d(128, 3, kernel_size=1),
         )
+        self._init_weights()
+    
+    def _init_weights(self):
+        for m in self.cost_volume_encoder:
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                nn.init.constant_(m.bias, 0.0)
 
+        for m in self.rv_decoder:
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                nn.init.constant_(m.bias, 0.0)
+        nn.init.normal_(self.rv_decoder[-1].weight, mean=0.0, std=1e-3)
+        nn.init.constant_(self.rv_decoder[-1].bias, 0.0)
+
+        for m in self.t_decoder:
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                nn.init.constant_(m.bias, 0.0)
+        nn.init.normal_(self.t_decoder[-1].weight, mean=0.0, std=1e-3)
+        nn.init.constant_(self.t_decoder[-1].bias, 0.0)
+
+        for m in self.pcd_decoder1:
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                nn.init.constant_(m.bias, 0.0)
+        
+        for m in self.pcd_decoder2:
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                nn.init.constant_(m.bias, 0.0)
 
     def forward(self, embedding_features, mask, numpoints):
         """

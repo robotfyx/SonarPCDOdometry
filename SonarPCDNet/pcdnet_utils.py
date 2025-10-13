@@ -136,6 +136,11 @@ class BatchNorm2d(_BNBase):
     def __init__(self, in_size: int, name: str = ""):
         super().__init__(in_size, batch_norm=nn.BatchNorm2d, name=name)
 
+class LayerNorm(_BNBase):
+
+    def __init__(self, in_size: int, name: str = ""):
+        super().__init__(in_size, batch_norm=nn.LayerNorm, name=name)
+
 class Conv1d(_ConvBase):
 
     def __init__(
@@ -196,7 +201,7 @@ class Conv2d(_ConvBase):
             bn,
             init,
             conv=nn.Conv2d,
-            batch_norm=BatchNorm2d,
+            batch_norm=LayerNorm,
             bias=bias,
             preact=preact,
             name=name
