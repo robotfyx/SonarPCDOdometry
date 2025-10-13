@@ -6,6 +6,7 @@ from utils import get_dataloader_workers, pad, sinkhorn_emd, rotvec2mat, rotatio
 import torch.nn as nn
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
+from torch.nn.utils import clip_grad
 
 if __name__ == '__main__':
     wholedata = SonarPCDData('/media/kemove/043E0D933E0D7F44/Sonar_Diffusion_SLAM/data')
@@ -64,7 +65,7 @@ if __name__ == '__main__':
             rv12_pre, t12_pre, pts1_pre = model(pcd1, f1, pcd2, f2)
             r12pre = rotvec2mat(rv12_pre)
 
-            rv12_loss = torch.norm(rv12_pre-rv, dim=1).mean()#rotation_matrix_loss(r12pre, rgt)#torch.norm(rv12_pre-rv, dim=1)
+            rv12_loss = torch.norm(rv12_pre-rv, dim=1).mean() #nn.MSELoss()(rv12_pre, rv)#rotation_matrix_loss(r12pre, rgt)#
             t12_loss = torch.norm(t12_pre-t, dim=1).mean()
             # cd = chamfer_distance(pts_pre, pts_gt)
             emd12 = sinkhorn_emd(pts1_gt, pts1_pre)
@@ -83,7 +84,7 @@ if __name__ == '__main__':
             T21[:3, 3] = t21_pre.squeeze(0)
             cyc_loss = torch.sum(torch.abs(T12 @ T21-torch.eye(4, device=device, dtype=torch.float32)))
 
-            loss = 0.1*rv12_loss+0.01*t12_loss+emd12+emd21+0.1*cyc_loss
+            loss = 10*rv12_loss+t12_loss+emd12+emd21+0.1*cyc_loss
 
             rvloss_train += rv12_loss
             tloss_train += t12_loss
@@ -94,6 +95,9 @@ if __name__ == '__main__':
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            # for name, param in model.named_parameters():
+            #     if param.grad is not None:
+            #         print(name, param.grad.abs().mean().item())
         scheduler.step()
         torch.cuda.empty_cache()
 
@@ -115,7 +119,7 @@ if __name__ == '__main__':
         cyc_test = 0.0
         # var_test = 0.0
         model.eval()
-        for i, (pcd1, pcd2, f1, f2, rv, t, pts1_gt, pts2_gt) in tqdm(enumerate(test_dataloader), total=test_size):
+        for j, (pcd1, pcd2, f1, f2, rv, t, pts1_gt, pts2_gt) in tqdm(enumerate(test_dataloader), total=test_size):
             with torch.no_grad():
                 pcd1 = pcd1.to(device).float()
                 pcd2 = pcd2.to(device).float()

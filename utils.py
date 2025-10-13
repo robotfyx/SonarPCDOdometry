@@ -285,7 +285,7 @@ def euler2mat(angle: torch.Tensor, deg:bool=False) -> torch.Tensor:
 
     return R
 
-def rotvec2mat(rot_vec: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+def rotvec2mat(rot_vec: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
     """
     Convert a batch of rotation vectors (axis-angle) to rotation matrices (B x 3 x 3).
     Differentiable implementation (Rodrigues' formula).

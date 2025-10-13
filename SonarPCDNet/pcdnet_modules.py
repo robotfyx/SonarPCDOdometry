@@ -174,8 +174,9 @@ class OPPredictor(nn.Module):
         points_concat = self.mlp_convs(points_concat) # [B, mlp[-1], N, 1]                                        
         points_concat = torch.squeeze(points_concat, dim=3) # [B, mlp[-1], N]
 
-        OP = F.softmax(points_concat, dim=2) # [B, mlp[-1], N]
-        return OP
+        # OP = F.softmax(points_concat, dim=1) # [B, mlp[-1], N]
+        OP = F.sigmoid(points_concat)
+        return OP #points_concat
     
 class PosePredictor(nn.Module):
     def __init__(self, in_channel:int, out_channel:int):
@@ -201,7 +202,6 @@ class PosePredictor(nn.Module):
             # nn.ReLU(),
             nn.Linear(in_features=256, out_features=128),
             nn.ReLU(),
-            nn.Dropout(p=0.1),
             nn.Linear(in_features=128, out_features=3)
         )
         self.t_decoder = nn.Sequential(
@@ -211,7 +211,6 @@ class PosePredictor(nn.Module):
             # nn.ReLU(),
             nn.Linear(in_features=256, out_features=128),
             nn.ReLU(),
-            nn.Dropout(p=0.1),
             nn.Linear(in_features=128, out_features=3)
         )
         self.pcd_decoder1 = nn.Sequential(
