@@ -1,3 +1,4 @@
 data/data.pkl
-data/data.pkl
 trainlog/
+__pycache__/
+test_code.py

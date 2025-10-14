@@ -22,10 +22,12 @@ if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = SonarPCDNet().to(device)
-    checkpoints = torch.load(os.path.join(basedir, 'trainlog/exp1/model_40.pth'), map_location=device)
+    checkpoints = torch.load(os.path.join(basedir, 'trainlog/exp1/model_70.pth'), map_location=device)
     model.load_state_dict(checkpoints["model"])
 
     for i, (pcd1, pcd2, f1, f2, rv, t, pts1_gt, pts2_gt) in enumerate(dataloader):
+        if i < 500:
+            continue
         with torch.no_grad():
             pcd1 = pcd1.to(device).float()
             pcd2 = pcd2.to(device).float()
@@ -79,5 +81,5 @@ if __name__ == '__main__':
         ax.set_zlabel('z')
         plt.show()
 
-        if i == 3:
+        if i == 503:
             break

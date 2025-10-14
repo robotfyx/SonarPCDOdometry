@@ -136,10 +136,25 @@ class BatchNorm2d(_BNBase):
     def __init__(self, in_size: int, name: str = ""):
         super().__init__(in_size, batch_norm=nn.BatchNorm2d, name=name)
 
-class LayerNorm(_BNBase):
+class LayerNorm2d(nn.Module):
+    """LayerNorm over channel dim for [B, C, N, K]"""
+    def __init__(self, num_channels, eps=1e-5):
+        super().__init__()
+        self.ln = nn.LayerNorm(num_channels, eps=eps)
 
-    def __init__(self, in_size: int, name: str = ""):
-        super().__init__(in_size, batch_norm=nn.LayerNorm, name=name)
+    def forward(self, x:torch.Tensor):
+        # x: [B, C, N, K] -> [B, N, K, C] -> LN -> [B, C, N, K]
+        y = x.permute(0, 2, 3, 1).contiguous()
+        return self.ln(y).permute(0, 3, 1, 2).contiguous()
+
+class GroupNorm2d(nn.Module):
+    """GroupNorm over [B, C, N, K]"""
+    def __init__(self, num_channels, num_groups=8, eps=1e-5):
+        super().__init__()
+        self.gn = nn.GroupNorm(num_groups=min(num_groups, num_channels), num_channels=num_channels, eps=eps)
+    def forward(self, x):
+        # x: [B, C, N, K]
+        return self.gn(x)
 
 class Conv1d(_ConvBase):
 
@@ -201,7 +216,7 @@ class Conv2d(_ConvBase):
             bn,
             init,
             conv=nn.Conv2d,
-            batch_norm=LayerNorm,
+            batch_norm=BatchNorm2d,
             bias=bias,
             preact=preact,
             name=name

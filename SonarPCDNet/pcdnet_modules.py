@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .pcdnet_utils import SharedMLP, gather_operation, furthest_point_sample, knn_point, grouping_operation
+from .pcdnet_utils import SharedMLP, gather_operation, furthest_point_sample, knn_point, grouping_operation, LayerNorm2d
 from typing import Optional
 from torch.nn import functional as F
 import math
@@ -15,7 +15,7 @@ class SAModule(nn.Module):
         if mlp[0] == 0:
             mlp_spec[0] += 3
         mlp_spec[0] += 3
-        self.mlp_module = SharedMLP(mlp_spec, bn=bn, init=nn.init.xavier_uniform_)
+        self.mlp_module = SharedMLP(mlp_spec, bn=bn, init=nn.init.kaiming_normal_)
     
     def forward(self, xyz:torch.Tensor, features:Optional[torch.Tensor]) ->tuple[torch.Tensor, torch.Tensor]:
         '''
@@ -196,19 +196,23 @@ class PosePredictor(nn.Module):
         )
         self.rv_decoder = nn.Sequential(
             nn.Linear(in_features=out_channel, out_features=256),
+            nn.LayerNorm(256),
             nn.ReLU(),
             # nn.Linear(in_features=256, out_features=256),
             # nn.ReLU(),
             nn.Linear(in_features=256, out_features=128),
+            nn.LayerNorm(128),
             nn.ReLU(),
             nn.Linear(in_features=128, out_features=3)
         )
         self.t_decoder = nn.Sequential(
             nn.Linear(in_features=out_channel, out_features=256),
+            nn.LayerNorm(256),
             nn.ReLU(),
             # nn.Linear(in_features=256, out_features=256),
             # nn.ReLU(),
             nn.Linear(in_features=256, out_features=128),
+            nn.LayerNorm(128),
             nn.ReLU(),
             nn.Linear(in_features=128, out_features=3)
         )
@@ -249,12 +253,12 @@ class PosePredictor(nn.Module):
         nn.init.constant_(self.t_decoder[-1].bias, 0.0)
 
         for m in self.pcd_decoder1:
-            if isinstance(m, nn.Linear):
+            if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
                 nn.init.constant_(m.bias, 0.0)
         
         for m in self.pcd_decoder2:
-            if isinstance(m, nn.Linear):
+            if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
                 nn.init.constant_(m.bias, 0.0)
 
@@ -318,4 +322,71 @@ class PosePredictor(nn.Module):
         points_out = points_out.permute(0, 2, 3, 1).reshape(-1, grid_size*grid_size, 3)
         
         return rv, t, points_out
+
+class RecoverPCD(nn.Module):
+    def __init__(self, in_channel:int, out_channel:int):
+        super().__init__()
+        self.cost_volume_encoder = nn.Sequential(
+            nn.Linear(in_features=in_channel, out_features=256),
+            nn.ReLU(),
+            nn.Linear(in_features=256, out_features=256),
+            nn.ReLU(),
+            nn.Linear(in_features=256, out_features=out_channel)
+        )
+        self.pcd_decoder1 = nn.Sequential(
+            nn.Conv1d(out_channel+2, 256, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv1d(256, 128, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv1d(128, 3, kernel_size=1)
+        )
+        self.pcd_decoder2 = nn.Sequential(
+            nn.Conv1d(out_channel+3, 256, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv1d(256, 128, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv1d(128, 3, kernel_size=1)
+        )
+        self._init_weights()
     
+    def _init_weights(self):
+        for m in self.cost_volume_encoder:
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                nn.init.constant_(m.bias, 0.0)
+        for m in self.pcd_decoder1:
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                nn.init.constant_(m.bias, 0.0)
+        for m in self.pcd_decoder2:
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                nn.init.constant_(m.bias, 0.0)
+ 
+    def forward(self, cost_volume:torch.Tensor, mask:torch.Tensor, numpoints:int):
+        """
+        input:
+        cost_volume: [B, C, N]
+        mask: [B, C, N]
+
+        return:
+        recover points: [B, numpoints, 3]
+        """
+        cost_volume_sum = torch.sum(cost_volume*mask, dim=2, keepdim=True) # [B, C, 1]
+        cost_volume_encode = self.cost_volume_encoder(cost_volume_sum.squeeze(2)) # [B, Cout]
+        cost_volume_encode = torch.tile(cost_volume_encode.unsqueeze(2), [1, 1, numpoints]) # [B, Cout, numpoints]
+        
+        # 2d grid
+        u = torch.sin(torch.arange(1, numpoints+1)).unsqueeze(1) # sin(1), sin(2), ... , sin(numpoints)
+        v = torch.cos(torch.arange(1, numpoints+1)).unsqueeze(1)
+        grid = torch.cat((u, v), dim=1).to(cost_volume.device).unsqueeze(0) # [1, numpoints, 2]
+        B = cost_volume.shape[0]
+        grid = torch.tile(grid, [B, 1, 1]).permute(0, 2, 1) # [B, 2, numpoints]
+        feat1 = torch.cat((grid, cost_volume_encode), dim=1) # [B, 2+Cout, numpoints]
+
+        folding1 = self.pcd_decoder1(feat1) # [B, 3, numpoints]
+        feat2 = torch.cat((folding1, cost_volume_encode), dim=1) # [B, 2+Cout, numpoints]
+        points_out = self.pcd_decoder2(feat2) # [B, 3, numpoints]
+        points_out = torch.permute(points_out, (0, 2, 1)) # [B, numpoints, 3]
+
+        return points_out

@@ -21,12 +21,14 @@ class SonarPCDNet(nn.Module):
         self.Mask = MaskPredictor(in_channel=64+64, mlp=[128,64])
 
         ### Pose Predictor ###
-        self.PosePredictor = PosePredictor(in_channel=64, out_channel=256)
+        # self.PosePredictor = PosePredictor(in_channel=64, out_channel=256)
 
         ### Flow Feature Encoding ###
         # self.flow_feature_encoding = SAModule(npoint=64, nsample=16, mlp=[512, 1024, 1024, 512], bn=False)
+        ### PCD Predictor ###
+        self.PCD_Predictor = RecoverPCD(in_channel=64, out_channel=256)
         
-    def forward(self, xyz_f1:torch.Tensor, features_f1:torch.Tensor, xyz_f2:torch.Tensor, features_f2:torch.Tensor):
+    def forward(self, xyz_f1:torch.Tensor, features_f1:torch.Tensor, xyz_f2:torch.Tensor, features_f2:torch.Tensor, nout:int):
         '''
         input:
         xyz_f1: [B, N, 3]
@@ -63,9 +65,10 @@ class SonarPCDNet(nn.Module):
         mask = F.softmax(mask, dim=2)
 
         ### Pose Predictor ###
-        rv, t, points_out = self.PosePredictor(cost_volume, mask, xyz_f1.shape[1]/10)
+        # rv, t, points_out = self.PosePredictor(cost_volume, mask, xyz_f1.shape[1]/10)
+        points_out = self.PCD_Predictor(cost_volume, mask, nout)
 
-        return rv, t, points_out
+        return points_out
 
 if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

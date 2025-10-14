@@ -18,7 +18,7 @@ theta_range = math.radians(60)
 phi_range = math.radians(12)
 N_seeds = 80 # The number of seeds to generate voronoi diagram
 keep_ratio = 0.4 # rate to keep polygons
-point_noise_range = 0.01 # 1cm
+point_noise_range = 0.005 # 0.5cm
 rot_noise_range = math.radians(10)
 trans_noise_range = 0.05 # 5cm
 rng = np.random.default_rng(None)
@@ -83,6 +83,19 @@ def get_voronoi(seeds):
                         for i in visited])    
     return points
 
+def sort_rt(arr):
+    """
+    按 (r, theta) 排序的函数
+    参数:
+        arr: N×2 numpy数组，每一行是 (r, theta)
+    返回:
+        排序后的 N×2 numpy数组
+    """
+    # arr[:, 0] 是 r，arr[:, 1] 是 theta
+    # np.lexsort 的排序顺序是从最后一个键开始，因此传入顺序要反过来
+    idx = np.lexsort((arr[:, 1], arr[:, 0]))
+    return arr[idx]
+
 def produce_data():
     # seeds in sector
     r_s = rng.uniform(0, 1, size=N_seeds)
@@ -100,6 +113,7 @@ def produce_data():
     # thetas = np.random.uniform(-theta_range, theta_range, size=N).reshape((N, 1))
     trueN = len(rs[mask])
     r_theta = np.stack((rs[mask], thetas[mask]), axis=1) # [trueN, 2]
+    r_theta = sort_rt(r_theta) # sorted
     r_theta = np.expand_dims(r_theta, axis=1).repeat(n_arc, axis=1) # [trueN, n_arc, 2]
     phi = np.linspace(-phi_range, phi_range, n_arc).reshape((1, n_arc, 1))
     phi = np.repeat(phi, repeats=trueN, axis=0) # [trueN, n_arc, 1]
@@ -167,7 +181,7 @@ if __name__ == '__main__':
     Poses = []
     Select_pts_in1 = []
     Select_pts_in2 = []
-    for i in trange(10000):
+    for i in trange(15000):
         pcd1, pcd2, pose, select_pts_in1, select_pts_in2 = produce_data()
         PCD1.append(pcd1[:, :3])
         PCD2.append(pcd2[:, :3])
