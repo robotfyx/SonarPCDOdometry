@@ -19,8 +19,8 @@ phi_range = math.radians(12)
 N_seeds = 80 # The number of seeds to generate voronoi diagram
 keep_ratio = 0.4 # rate to keep polygons
 point_noise_range = 0.005 # 0.5cm
-rot_noise_range = math.radians(10)
-trans_noise_range = 0.05 # 5cm
+rot_noise_range = math.radians(15)
+trans_noise_range = 0.25 # 5cm
 rng = np.random.default_rng(None)
 
 def random_in_poly(poly: Polygon, n):
@@ -115,7 +115,7 @@ def produce_data():
     r_theta = np.stack((rs[mask], thetas[mask]), axis=1) # [trueN, 2]
     r_theta = sort_rt(r_theta) # sorted
     r_theta = np.expand_dims(r_theta, axis=1).repeat(n_arc, axis=1) # [trueN, n_arc, 2]
-    phi = np.linspace(-phi_range, phi_range, n_arc).reshape((1, n_arc, 1))
+    phi = np.linspace(-phi_range/2, phi_range/2, n_arc).reshape((1, n_arc, 1))
     phi = np.repeat(phi, repeats=trueN, axis=0) # [trueN, n_arc, 1]
     r_theta_phi = np.concatenate((r_theta, phi), axis=2) # [trueN, n_arc, 3]
     r_theta_phi_c = r_theta_phi.reshape((-1, 3)) # copy
@@ -170,7 +170,7 @@ def produce_data():
     # ax2.set_thetamax(60)
     # ax2.set_rmax(1)
 
-    return pcd1, pcd2, pose, select_pts_in1_copy, select_pts_in2
+    return pcd1, pcd2, pose, select_pts_in1_copy, select_pts_in2, r_theta_phi_c, r_theta_phi_2
 
 if __name__ == '__main__':
     savepath = '/media/kemove/043E0D933E0D7F44/Sonar_Diffusion_SLAM/data'
@@ -182,13 +182,17 @@ if __name__ == '__main__':
     Select_pts_in1 = []
     Select_pts_in2 = []
     for i in trange(15000):
-        pcd1, pcd2, pose, select_pts_in1, select_pts_in2 = produce_data()
+        pcd1, pcd2, pose, select_pts_in1, select_pts_in2, rt1, rt2 = produce_data()
+        if len(pcd1) <= 2048:
+            continue
         PCD1.append(pcd1[:, :3])
         PCD2.append(pcd2[:, :3])
-        n1 = estimate_normals(pcd1[:, :3])
-        F1.append(n1)
-        n2 = estimate_normals(pcd2[:, :3])
-        F2.append(n2)
+        # n1 = estimate_normals(pcd1[:, :3])
+        # F1.append(n1)
+        F1.append(rt1)
+        # n2 = estimate_normals(pcd2[:, :3])
+        # F2.append(n2)
+        F2.append(rt2)
         Poses.append(pose)
         Select_pts_in1.append(select_pts_in1)
         Select_pts_in2.append(select_pts_in2)
@@ -205,5 +209,5 @@ if __name__ == '__main__':
         "select_pts_in1": Select_pts_in1,
         "select_pts_in2": Select_pts_in2
     }
-    with open(os.path.join(savepath, 'data.pkl'), 'wb') as file:
+    with open(os.path.join(savepath, 'data_feature_r_theta.pkl'), 'wb') as file:
         pickle.dump(data, file, protocol=3)

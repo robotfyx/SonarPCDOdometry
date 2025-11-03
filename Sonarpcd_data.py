@@ -8,7 +8,7 @@ from scipy.spatial.transform import Rotation as R
 
 class SonarPCDData(Dataset):
     def __init__(self, datadir):
-        with open(os.path.join(datadir, 'data.pkl'), 'rb') as file:
+        with open(os.path.join(datadir, 'data_feature_r_theta.pkl'), 'rb') as file:
             self.data = pickle.load(file)
         self.pcd1 = self.data["pcd1"]
         self.pcd2 = self.data["pcd2"]
@@ -27,10 +27,10 @@ class SonarPCDData(Dataset):
         pose = self.posegt[index]
         # q = quaternions.mat2quat(pose[:3, :3])
         # eu = R.from_matrix(pose[:3, :3]).as_euler('xyz', degrees=True)
-        rv = R.from_matrix(pose[:3, :3]).as_rotvec(degrees=False)
+        # rv = R.from_matrix(pose[:3, :3]).as_rotvec(degrees=False)
         t = pose[:3, 3]
 
         pts1 = self.select_pts_in1[index][:, :3]
         pts2 = self.select_pts_in2[index][:, :3]
 
-        return torch.from_numpy(pcd1), torch.from_numpy(pcd2), torch.from_numpy(f1), torch.from_numpy(f2), torch.from_numpy(rv), torch.from_numpy(t), torch.from_numpy(pts1), torch.from_numpy(pts2)
+        return torch.from_numpy(pcd1), torch.from_numpy(pcd2), torch.from_numpy(f1), torch.from_numpy(f2), torch.from_numpy(pose[:3, :3]), torch.from_numpy(t), torch.from_numpy(pts1), torch.from_numpy(pts2)

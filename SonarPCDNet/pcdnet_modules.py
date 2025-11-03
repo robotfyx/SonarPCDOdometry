@@ -1,15 +1,17 @@
 import torch
 import torch.nn as nn
-from .pcdnet_utils import SharedMLP, gather_operation, furthest_point_sample, knn_point, grouping_operation, LayerNorm2d
+from .pcdnet_utils import SharedMLP, gather_operation, furthest_point_sample, knn_point, grouping_operation, arc_gather, arc_neighbors, get_remaining
 from typing import Optional
 from torch.nn import functional as F
 import math
 
 class SAModule(nn.Module):
-    def __init__(self, mlp:list[int], npoint:int, nsample:int, bn:bool=True):
+    def __init__(self, mlp:list[int], npoint:int, nsample:int, narc:int, m:int, bn:bool=True):
         super().__init__()
         self.npoint = npoint
-        self.nsample = nsample
+        self.nsample = narc-1 #nsample
+        self.narc = narc
+        self.m = m
 
         mlp_spec = mlp
         if mlp[0] == 0:
@@ -28,10 +30,12 @@ class SAModule(nn.Module):
         new_features [B, mlps[-1], npoint]
         '''
         xyz_flipped = xyz.transpose(1, 2).contiguous() # [B, 3, N]
-        new_xyz = (gather_operation(xyz_flipped, furthest_point_sample(xyz, self.npoint)).transpose(1, 2).contiguous()) # [B, npoint, 3]
+        # new_xyz = (gather_operation(xyz_flipped, furthest_point_sample(xyz, self.npoint)).transpose(1, 2).contiguous()) # [B, npoint, 3]
+        new_xyz, idx_global = arc_gather(xyz, self.narc, self.m)
 
         if features is not None:
-            _, idxq = knn_point(self.nsample, xyz, new_xyz) # [B, npoint, nsample]
+            # _, idxq = knn_point(self.nsample, xyz, new_xyz) # [B, npoint, nsample]
+            idxq = get_remaining(idx_global, int(xyz.shape[1]/self.narc), self.narc)
             grouped_xyz = grouping_operation(xyz_flipped, idxq) # [B, 3, npoint, nsample]
             grouped_features = grouping_operation(features, idxq) # [B, C, npoint, nsample]
 
@@ -40,7 +44,8 @@ class SAModule(nn.Module):
             xyz_diff = grouped_xyz-new_xyz_expand
             new_features = torch.cat((xyz_diff, grouped_features), dim=1) # [B, C+3, npoint, nsample]
         else:
-            _, idxq = knn_point(self.nsample, xyz, new_xyz) # [B, npoint, nsample]
+            # _, idxq = knn_point(self.nsample, xyz, new_xyz) # [B, npoint, nsample]
+            idxq = get_remaining(idx_global, int(xyz.shape[1]/self.narc), self.narc)
             grouped_xyz = grouping_operation(xyz_flipped, idxq) # [B, 3, npoint, nsample]
             new_xyz_t = torch.permute(new_xyz, (0, 2, 1)).contiguous() # [B, 3, npoint]
             new_xyz_expand = torch.tile(new_xyz_t.unsqueeze(-1), (1, 1, 1, self.nsample)) # [B, 3, npoint, nsample]
@@ -54,10 +59,11 @@ class SAModule(nn.Module):
         return new_xyz, new_features
     
 class CostVolume(nn.Module):
-    def __init__(self, nsample, nsample_q, in_channel1, in_channel2, mlp1, mlp2): # mlp[-1]=mlp1[-1]=mlp2[-1]
+    def __init__(self, nsample, nsample_q, in_channel1, in_channel2, mlp1, mlp2, m): # mlp[-1]=mlp1[-1]=mlp2[-1]
         super(CostVolume, self).__init__()
         self.nsample = nsample
-        self.nsample_q = nsample_q
+        self.nsample_q = m#nsample_q
+        self.m = m
         # self.in_channel = [in_channel1, in_channel2, 10]
 
         mlp1_spec = [in_channel1+in_channel2+10]+mlp1
@@ -87,12 +93,15 @@ class CostVolume(nn.Module):
         return:
         pc_feat1_new: [B, mlp[-1], S] the cost volume
         '''
+        B, _, S = xyz1.shape
+        n = int(S/self.m)
         xyz1_t = xyz1.permute(0, 2, 1).contiguous() # [B, S, 3]
         xyz2_t = xyz2.permute(0, 2, 1).contiguous() # [B, N, 3]
         
         ### -----------------------------------------------------------
         ### FIRST AGGREGATE
-        _, idx_q = knn_point(self.nsample_q, xyz2_t, xyz1_t) # [B, S, k] k=nsample_q
+        # _, idx_q = knn_point(self.nsample_q, xyz2_t, xyz1_t) # [B, S, k] k=nsample_q
+        idx_q = arc_neighbors(n, self.m, device=xyz1.device)
 
         # -- ME --
         qi_xyz_grouped = grouping_operation(xyz2, idx_q) # [B, 3, S, k]
@@ -128,14 +137,17 @@ class CostVolume(nn.Module):
 
         ### -----------------------------------------------------------
         ### SECOND AGGREGATE
-        _, idx = knn_point(self.nsample, xyz1_t, xyz1_t) # [B, S, m] m=nsample
+        # _, idx = knn_point(self.nsample, xyz1_t, xyz1_t) # [B, S, m] m=nsample
+        idxx = torch.arange(S, dtype=torch.int32, device=xyz1.device)
+        idxx = idxx.reshape(n, self.m).unsqueeze(0).tile(B, 1, 1)
+        idx = get_remaining(idxx, n, self.m) if self.m > 1 else idxx
         pc_xyz_grouped = grouping_operation(xyz1, idx) # [B, 3, S, m]
         pc_points_grouped = grouping_operation(pi_feat1_new, idx) # [B, mlp[-1], S, m]
 
-        pc_xyz_new = torch.tile( torch.unsqueeze(xyz1, 3), [1, 1, 1, self.nsample]) # [B, 3, S, m]
-        pc_points_new = torch.tile( torch.unsqueeze(feature1, 3), [1, 1, 1, self.nsample]) # [B, C1, S, m]
+        pc_xyz_new = torch.tile(torch.unsqueeze(xyz1, 3), [1, 1, 1, self.m-1 if self.m >1 else 1]) # [B, 3, S, m]
+        pc_points_new = torch.tile(torch.unsqueeze(feature1, 3), [1, 1, 1, self.m-1 if self.m >1 else 1]) # [B, C1, S, m]
 
-        pc_xyz_diff = pc_xyz_grouped-pc_xyz_new # [B, 3, S, m]
+        pc_xyz_diff = pc_xyz_grouped-pc_xyz_new if self.m > 1 else pc_xyz_grouped # [B, 3, S, m]
         pc_euc_diff = torch.sqrt(torch.sum(torch.square(pc_xyz_diff), dim=1, keepdim=True) + 1e-20) # [B, 1, S, m]
         pc_xyz_diff_concat = torch.cat((pc_xyz_new, pc_xyz_grouped, pc_xyz_diff, pc_euc_diff), dim=1) # [B, 10, S, m]
 
@@ -324,36 +336,45 @@ class PosePredictor(nn.Module):
         return rv, t, points_out
 
 class RecoverPCD(nn.Module):
-    def __init__(self, in_channel:int, out_channel:int):
+    def __init__(self, num_channel:int, n_arc:int=10):
         super().__init__()
-        self.cost_volume_encoder = nn.Sequential(
-            nn.Linear(in_features=in_channel, out_features=256),
-            nn.ReLU(),
-            nn.Linear(in_features=256, out_features=256),
-            nn.ReLU(),
-            nn.Linear(in_features=256, out_features=out_channel)
-        )
+        # self.cost_volume_encoder = nn.Sequential(
+        #     nn.Linear(in_features=in_channel, out_features=256),
+        #     nn.ReLU(),
+        #     nn.Linear(in_features=256, out_features=256),
+        #     nn.ReLU(),
+        #     nn.Linear(in_features=256, out_features=out_channel)
+        # )
         self.pcd_decoder1 = nn.Sequential(
-            nn.Conv1d(out_channel+2, 256, kernel_size=1),
+            nn.Conv1d(num_channel+2, 256, kernel_size=1),
             nn.ReLU(),
             nn.Conv1d(256, 128, kernel_size=1),
             nn.ReLU(),
             nn.Conv1d(128, 3, kernel_size=1)
         )
         self.pcd_decoder2 = nn.Sequential(
-            nn.Conv1d(out_channel+3, 256, kernel_size=1),
+            nn.Conv1d(num_channel+3, 256, kernel_size=1),
             nn.ReLU(),
             nn.Conv1d(256, 128, kernel_size=1),
             nn.ReLU(),
             nn.Conv1d(128, 3, kernel_size=1)
         )
+        # self.weights_decoder = nn.Sequential(
+        #     nn.Conv1d(num_channel+2, 256, kernel_size=1),
+        #     nn.ReLU(),
+        #     nn.Conv1d(256, 256, kernel_size=1),
+        #     nn.ReLU(),
+        #     nn.Conv1d(256, 128, kernel_size=1),
+        #     nn.ReLU(),
+        #     nn.Conv1d(128, n_arc, kernel_size=1)
+        # )
         self._init_weights()
     
     def _init_weights(self):
-        for m in self.cost_volume_encoder:
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
-                nn.init.constant_(m.bias, 0.0)
+        # for m in self.cost_volume_encoder:
+        #     if isinstance(m, nn.Linear):
+        #         nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+        #         nn.init.constant_(m.bias, 0.0)
         for m in self.pcd_decoder1:
             if isinstance(m, nn.Conv1d):
                 nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
@@ -362,31 +383,38 @@ class RecoverPCD(nn.Module):
             if isinstance(m, nn.Conv1d):
                 nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
                 nn.init.constant_(m.bias, 0.0)
+        # for m in self.weights_decoder:
+        #     if isinstance(m, nn.Conv1d):
+        #         nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+        #         nn.init.constant_(m.bias, 0.0)
  
-    def forward(self, cost_volume:torch.Tensor, mask:torch.Tensor, numpoints:int):
+    def forward(self, embedding:torch.Tensor, numpoints:int, rtheta:torch.Tensor):
         """
         input:
-        cost_volume: [B, C, N]
-        mask: [B, C, N]
+        embedding: [B, C, 1]
+
+        rtheta: [B, numpoints, 2]
 
         return:
         recover points: [B, numpoints, 3]
-        """
-        cost_volume_sum = torch.sum(cost_volume*mask, dim=2, keepdim=True) # [B, C, 1]
-        cost_volume_encode = self.cost_volume_encoder(cost_volume_sum.squeeze(2)) # [B, Cout]
-        cost_volume_encode = torch.tile(cost_volume_encode.unsqueeze(2), [1, 1, numpoints]) # [B, Cout, numpoints]
-        
-        # 2d grid
-        u = torch.sin(torch.arange(1, numpoints+1)).unsqueeze(1) # sin(1), sin(2), ... , sin(numpoints)
-        v = torch.cos(torch.arange(1, numpoints+1)).unsqueeze(1)
-        grid = torch.cat((u, v), dim=1).to(cost_volume.device).unsqueeze(0) # [1, numpoints, 2]
-        B = cost_volume.shape[0]
-        grid = torch.tile(grid, [B, 1, 1]).permute(0, 2, 1) # [B, 2, numpoints]
-        feat1 = torch.cat((grid, cost_volume_encode), dim=1) # [B, 2+Cout, numpoints]
+        """        
+        embedding = torch.tile(embedding, [1, 1, numpoints])
+        # # 2d grid
+        # u = torch.sin(torch.arange(1, numpoints+1)).unsqueeze(1) # sin(1), sin(2), ... , sin(numpoints)
+        # v = torch.cos(torch.arange(1, numpoints+1)).unsqueeze(1)
+        # grid = torch.cat((u, v), dim=1).to(embedding.device).unsqueeze(0) # [1, numpoints, 2]
+        # B = embedding.shape[0]
+        # grid = torch.tile(grid, [B, 1, 1]).permute(0, 2, 1) # [B, 2, numpoints]
+        rtheta = torch.permute(rtheta, (0, 2, 1)) # [B, 2, numpoints]
+        feat1 = torch.cat((rtheta, embedding), dim=1) # [B, 2+Cout, numpoints]
 
         folding1 = self.pcd_decoder1(feat1) # [B, 3, numpoints]
-        feat2 = torch.cat((folding1, cost_volume_encode), dim=1) # [B, 2+Cout, numpoints]
+        feat2 = torch.cat((folding1, embedding), dim=1) # [B, 2+Cout, numpoints]
         points_out = self.pcd_decoder2(feat2) # [B, 3, numpoints]
         points_out = torch.permute(points_out, (0, 2, 1)) # [B, numpoints, 3]
 
-        return points_out
+        # weights = self.weights_decoder(feat1) # [B, n_arc, numpoints]
+        # weights = torch.permute(weights, (0, 2, 1)) # [B, numpoints, n_arc]
+        # weights = F.softmax(weights, dim=2)
+
+        return points_out #weights

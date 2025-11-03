@@ -66,7 +66,7 @@ def check_tensor(tensor: tuple[torch.Tensor, np.ndarray], sizes: list, tensor_ty
         check_type(tensor, tensor_type)
 
 def get_dataloader_workers():
-    return 0 if sys.platform.startswith('win') else 4
+    return 0 if sys.platform.startswith('win') else 10
 
 def estimate_normals(points, k=16, orient=True):
     """

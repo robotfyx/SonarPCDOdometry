@@ -40,7 +40,7 @@ class SharedMLP(nn.Sequential):
             args: list[int],
             *,
             bn: bool = False,
-            activation=nn.ReLU(inplace=True),
+            # activation=nn.ReLU(inplace=True),
             preact: bool = False,
             first: bool = False,
             name: str = "",
@@ -55,7 +55,7 @@ class SharedMLP(nn.Sequential):
                     args[i],
                     args[i + 1],
                     bn=(not first or not preact or (i != 0)) and bn,
-                    activation=activation
+                    activation=nn.ReLU()
                     if (not first or not preact or (i != 0)) else None,
                     preact=preact,
                     init=init
@@ -199,7 +199,7 @@ class Conv2d(_ConvBase):
             kernel_size: tuple[int, int] = (1, 1),
             stride: tuple[int, int] = (1, 1),
             padding: tuple[int, int] = (0, 0),
-            activation=nn.ReLU(inplace=True),
+            activation=nn.ReLU(),
             bn: bool = False,
             init=nn.init.kaiming_normal_,
             bias: bool = True,
@@ -301,7 +301,7 @@ def _nn_distance(pc1, pc2):
     pc1_expand_tile = pc1.unsqueeze(2).repeat(1,1,M,1)
     pc2_expand_tile = pc2.unsqueeze(1).repeat(1,N,1,1)
     pc_diff = pc1_expand_tile - pc2_expand_tile
-    pc_dist = torch.sqrt(torch.sum(pc_diff**2, dim=-1) + 1e-8) # (B,N,M)
+    pc_dist = torch.sqrt(torch.sum(pc_diff**2, dim=-1) + 1e-10) # (B,N,M)
 
     return pc_dist
 
@@ -317,10 +317,17 @@ def knn_point(nsample, xyz, new_xyz):
     """
 
     pc_dist = _nn_distance(new_xyz, xyz)    # [B, S, N]
-    group_dist, group_idx = torch.topk(pc_dist, nsample, largest=False, dim=-1) # batch_size, S, nsample
+    group_dist, group_idx = torch.topk(pc_dist, nsample+1, largest=False, dim=-1) # batch_size, S, nsample
+    d0 = group_dist[:, :, 0]
+    if torch.mean(d0) < 1e-4:
+        group_dist = group_dist[:, :, 1:]
+        group_idx = group_idx[:, :, 1:]
+    else:
+        group_dist = group_dist[:, :, :nsample]
+        group_idx = group_idx[:, :, :nsample]
 
     group_idx = group_idx.int().contiguous()
-    group_dist = group_idx.contiguous()
+    group_dist = group_dist.contiguous()
     
     return group_dist, group_idx
 
@@ -369,3 +376,42 @@ class GroupingOperation(Function):
 
         return grad_features, torch.zeros_like(idx)
 grouping_operation = GroupingOperation.apply
+
+def arc_gather(pts:torch.Tensor, narc:int, nsample:int):
+    B, N, _ = pts.shape
+    n = int(N/narc)
+    pts = pts.view(B, n, narc, 3)
+
+    # # 为每个 (B, n) 组合生成随机不重复索引
+    # perm = torch.stack([torch.randperm(narc, device=pts.device)[:nsample] for _ in range(B * n)], dim=0)
+    # perm = perm.view(B, n, nsample)  # [B, n, m]
+    rand_vals = torch.rand(B, n, narc, device=pts.device)
+    perm = rand_vals.argsort(dim=-1)[..., :nsample]
+
+    # 扩展索引维度方便 gather
+    idx_expand = perm.unsqueeze(-1).expand(-1, -1, -1, 3)  # [B, n, m, 3]
+    selected = torch.gather(pts, 2, idx_expand)
+    selected = selected.view(B, n*nsample, 3)
+
+    offset = torch.arange(n, device=pts.device).view(1, n, 1)*narc
+    idx_global = (perm+offset).reshape(B, n, nsample)
+    return selected, idx_global
+
+def arc_neighbors(n:int, neighbors:int, device, B:int=1):
+    base = torch.arange(n * neighbors, dtype=torch.int32).view(n, neighbors)   # [3, 4]
+    idx = base.repeat_interleave(neighbors, dim=0)
+    idx = idx.unsqueeze(0).tile((B, 1, 1)).to(device)
+    return idx
+
+def get_remaining(idx_global:torch.Tensor, n:int, narc:int):
+    B, _, m = idx_global.shape
+    device = idx_global.device
+    group_offsets = torch.arange(n * narc, device=device).view(1, n, narc).expand(B, -1, -1)
+    local_idx = idx_global % narc  # [B, n, m]
+    local_idx_expanded = local_idx.unsqueeze(-1).expand(-1, -1, -1, narc)  # [B, n, m, narc]
+    group_full_expanded = group_offsets.unsqueeze(2).expand(-1, -1, m, -1) # [B, n, m, narc]
+    mask = (torch.arange(narc, device=device).view(1, 1, 1, narc) == local_idx_expanded)
+    mask = mask.to(device)
+    rest = group_full_expanded[~mask].view(B, n, m, narc - 1)  # [B, n, m, narc-1]
+    rest = rest.view(B, n*m, narc-1)
+    return rest.to(torch.int32)
