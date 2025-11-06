@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from sonar_pcdnet import SonarPCDNet
+from sonar_pcdnet import SonarPCDNet, SonarNet
 from Sonarpcd_data import SonarPCDData
 import os
-from utils import get_dataloader_workers, pad, sinkhorn_emd, rotvec2mat
+from utils import get_dataloader_workers, sinkhorn_emd, rotvec2mat, loss_dispersion_ratio
 from matplotlib import pyplot as plt
 from transforms3d import quaternions
 import numpy as np
@@ -20,13 +20,16 @@ if __name__ == '__main__':
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    mseloss = nn.MSELoss()
 
-    model = SonarPCDNet().to(device)
-    checkpoints = torch.load(os.path.join(basedir, 'trainlog/exp4/model_5.pth'), map_location=device)
+    model = SonarNet().to(device)
+    checkpoints = torch.load(os.path.join(basedir, 'trainlog/exp1/model_5.pth'), map_location=device)
     model.load_state_dict(checkpoints["model"])
     model.eval()
 
     for i, (pcd1, pcd2, f1, f2, R, t, pts1_gt, pts2_gt) in enumerate(dataloader):
+        # if i < 300:
+        #     continue
         with torch.no_grad():
             pcd1 = pcd1.to(device).float()
             pcd2 = pcd2.to(device).float()
@@ -38,12 +41,10 @@ if __name__ == '__main__':
             pts1_gt = pts1_gt.to(device).float()
             pts2_gt = pts2_gt.to(device).float()
 
-            pts1_pre, weights1 = model(pcd1, f1, pcd2, f2, pts1_gt.shape[1], f1[:, ::10, :2])
-            xyz = pcd1.view((1, pts1_gt.shape[1], 10, 3))
-            print(weights1[0, 0], xyz[0, 0])
+            pts1_pre, phi1_pre = model(pcd1, f1, pcd2, f2, pts1_gt.shape[1], f1[:, :, :2])
             # weights = nn.functional.softmax(weights1/1e-3, dim=2)
             # print(weights[0, 0])
-            pts2_pre, weights2 = model(pcd2, f2, pcd1, f1, pts2_gt.shape[1], f2[:, ::10, :2])
+            pts2_pre, phi2_pre = model(pcd2, f2, pcd1, f1, pts2_gt.shape[1], f2[:, :, :2])
 
             q1 = pts1_pre-torch.mean(pts1_pre, dim=1)
             q2 = pts2_pre-torch.mean(pts2_pre, dim=1)
@@ -58,32 +59,44 @@ if __name__ == '__main__':
             R_pre = V.t() @ D @ U.t()
                 
             t_pre = torch.mean(pts1_pre, dim=1).squeeze(0)-R_pre @ torch.mean(pts2_pre, dim=1).squeeze(0)
-            # pcd_loss = torch.mean(torch.norm(pts1_pre-pts1_gt, dim=2))#mseloss(pts1_pre, pts1_gt)#
+            pcd_loss = torch.mean(torch.norm(pts1_pre-pts1_gt, dim=2))#mseloss(pts1_pre, pts1_gt)#
             # x_loss = mseloss(pts1_pre[:, :, 0], pts1_gt[:, :, 0])
             # y_loss = mseloss(pts1_pre[:, :, 1], pts1_gt[:, :, 1])
-            z1_loss = nn.MSELoss()(pts1_pre[:, :, 2], pts1_gt[:, :, 2])
+            # z1_loss = nn.MSELoss()(pts1_pre[:, :, 2], pts1_gt[:, :, 2])
             # z2_loss = mseloss(pts2_pre[:, :, 2], pts2_gt[:, :, 2])
-            entropy_loss = (-torch.sum(weights1*torch.log(weights1+1e-10), dim=-1)).mean()#+(-torch.sum(weights2*torch.log(weights2+1e-10), dim=-1)).mean()
+            # entropy_loss = (-torch.sum(weights1*torch.log(weights1+1e-10), dim=-1)).mean()#+(-torch.sum(weights2*torch.log(weights2+1e-10), dim=-1)).mean()
 
             t_loss = torch.linalg.norm(t.squeeze(0)-t_pre)
             R_loss = torch.abs(R.squeeze(0)-R_pre).sum()
+            phi1_deg_gt = (torch.arcsin(pts1_gt[:, :, 2]/f1[:, ::10, 0]))*180/torch.pi
+            phi1_loss = mseloss(phi1_deg_gt, phi1_pre)
+            phi2_deg_gt = (torch.arcsin(pts2_gt[:, :, 2]/f2[:, ::10, 0]))*180/torch.pi
+            phi2_loss = mseloss(phi2_deg_gt, phi2_pre)
         # print(rv12_loss, t12_loss, emd12, emd21, cyc_loss)
-        # print(pcd_loss, emd12)
+        print(pcd_loss, R_loss, t_loss)
         # print(weights1[0, 0])
-        print(z1_loss)
+        
         pts1_gt = pts1_gt.squeeze(0).cpu().numpy()
         pts1_pre = pts1_pre.squeeze(0).cpu().numpy()
         # pcd1_c = pcd1.squeeze(0).detach().cpu().numpy()
+
+        N = pts1_gt.shape[0]
+        indices = np.arange(N)
+        colors = plt.cm.jet(np.linspace(0, 1, N))
         fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(pts1_gt[:, 0], pts1_gt[:, 1], pts1_gt[:, 2], c='g')
+        ax1 = fig.add_subplot(111, projection='3d')
+        ax1.scatter(pts1_gt[:, 0], pts1_gt[:, 1], pts1_gt[:, 2], c='g')
         # ax.scatter(pcd1_c[:10, 0], pcd1_c[:10, 1], pcd1_c[:10, 2], c='b')
-        ax.scatter(pts1_pre[:, 0], pts1_pre[:, 1], pts1_pre[:, 2], c='r')
-        ax.set_aspect('equal')
-        ax.set_xlabel('x')
-        ax.set_ylabel('y')
-        ax.set_zlabel('z')
+        ax1.scatter(pts1_pre[:, 0], pts1_pre[:, 1], pts1_pre[:, 2], c='r')
+        ax1.set_aspect('equal')
+        ax1.set_xlabel('x')
+        ax1.set_ylabel('y')
+        ax1.set_zlabel('z')
+        # ax2 = fig.add_subplot(122)
+        # ax2.scatter(indices, zpre.squeeze(0).detach().cpu().numpy(),c=colors)
+        # ax2.scatter(np.arange(zgt.shape[1]), zgt.squeeze(0).detach().cpu().numpy(),c='g')
+        # ax2.set_aspect('equal')
         plt.show()
 
-        if i == 3:
+        if i == 10:
             break

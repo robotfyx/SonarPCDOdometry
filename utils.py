@@ -326,3 +326,11 @@ def rotation_matrix_loss(R_pred:torch.Tensor, R_gt:torch.Tensor):
     cos_theta = ((R_pred.transpose(1,2) @ R_gt).diagonal(dim1=1, dim2=2).sum(-1) - 1) / 2
     cos_theta = cos_theta.clamp(-1 + 1e-6, 1 - 1e-6)
     return torch.acos(cos_theta).mean()
+
+def loss_dispersion_ratio(x, eps=1e-8, eps2=1e-6):
+    # x: [B, N]
+    m = x.mean(dim=1, keepdim=True)
+    var = ((x - m)**2).mean(dim=1)             # variance per sample
+    rms2 = (x**2).mean(dim=1)                  # total mean square (var + mean^2)
+    ratio = var / (rms2 + eps)                 # in [0, 1]
+    return -torch.log(ratio + eps2)

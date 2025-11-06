@@ -29,38 +29,61 @@ except ModuleNotFoundError:
         with_cuda=True,
     )
 
+# class SharedMLP(nn.Sequential):
+#     """
+#         Inherit from `nn.Sequential`\n
+#         a sequence of `Conv2d`
+#     """
+
+#     def __init__(
+#             self,
+#             args: list[int],
+#             *,
+#             bn: bool = False,
+#             # activation=nn.ReLU(inplace=True),
+#             preact: bool = False,
+#             first: bool = False,
+#             name: str = "",
+#             init = nn.init.kaiming_normal_ 
+#     ):
+#         super().__init__()
+
+#         for i in range(len(args) - 1):
+#             self.add_module(
+#                 name + 'layer{}'.format(i),
+#                 Conv2d(
+#                     args[i],
+#                     args[i + 1],
+#                     bn=(not first or not preact or (i != 0)) and bn,
+#                     activation=nn.LeakyReLU()
+#                     if (not first or not preact or (i != 0)) else None,
+#                     preact=preact,
+#                     init=init
+#                 )
+#             )
+
 class SharedMLP(nn.Sequential):
-    """
-        Inherit from `nn.Sequential`\n
-        a sequence of `Conv2d`
-    """
-
-    def __init__(
-            self,
-            args: list[int],
-            *,
-            bn: bool = False,
-            # activation=nn.ReLU(inplace=True),
-            preact: bool = False,
-            first: bool = False,
-            name: str = "",
-            init = nn.init.kaiming_normal_ 
-    ):
+    def __init__(self, mlp):
         super().__init__()
-
-        for i in range(len(args) - 1):
-            self.add_module(
-                name + 'layer{}'.format(i),
-                Conv2d(
-                    args[i],
-                    args[i + 1],
-                    bn=(not first or not preact or (i != 0)) and bn,
-                    activation=nn.ReLU()
-                    if (not first or not preact or (i != 0)) else None,
-                    preact=preact,
-                    init=init
+        for i in range(len(mlp)-1):
+            if i <= len(mlp)-3:
+                self.add_module(
+                    f'layer{i}',
+                    nn.Conv2d(mlp[i], mlp[i+1], kernel_size=(1, 1))
                 )
-            )
+                self.add_module(
+                    f'gn{i}',
+                    nn.GroupNorm(1, mlp[i+1])
+                )
+                self.add_module(
+                    f'act{i}',
+                    nn.LeakyReLU()
+                )
+            elif i == len(mlp)-2:
+                self.add_module(
+                    f'layer{i}',
+                    nn.Conv2d(mlp[i], mlp[i+1], kernel_size=(1, 1))
+                )
 
 class _ConvBase(nn.Sequential):
 
@@ -93,7 +116,7 @@ class _ConvBase(nn.Sequential):
         )
         init(conv_unit.weight)
         if bias:
-            nn.init.constant_(conv_unit.bias, 0)
+            nn.init.constant_(conv_unit.bias, 0.0)
 
         if bn:
             if not preact:

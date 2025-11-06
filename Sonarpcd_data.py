@@ -8,7 +8,7 @@ from scipy.spatial.transform import Rotation as R
 
 class SonarPCDData(Dataset):
     def __init__(self, datadir):
-        with open(os.path.join(datadir, 'data_feature_r_theta.pkl'), 'rb') as file:
+        with open(os.path.join(datadir, 'data_feature_r_theta1.pkl'), 'rb') as file:
             self.data = pickle.load(file)
         self.pcd1 = self.data["pcd1"]
         self.pcd2 = self.data["pcd2"]

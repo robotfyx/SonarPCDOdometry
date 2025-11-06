@@ -6,9 +6,9 @@ from torch.nn import functional as F
 import math
 
 class SAModule(nn.Module):
-    def __init__(self, mlp:list[int], npoint:int, nsample:int, narc:int, m:int, bn:bool=True):
+    def __init__(self, mlp:list[int], narc:int, m:int):
         super().__init__()
-        self.npoint = npoint
+        # self.npoint = npoint
         self.nsample = narc-1 #nsample
         self.narc = narc
         self.m = m
@@ -17,7 +17,7 @@ class SAModule(nn.Module):
         if mlp[0] == 0:
             mlp_spec[0] += 3
         mlp_spec[0] += 3
-        self.mlp_module = SharedMLP(mlp_spec, bn=bn, init=nn.init.kaiming_normal_)
+        self.mlp_module = SharedMLP(mlp_spec, bn=False, init=nn.init.xavier_normal_)
     
     def forward(self, xyz:torch.Tensor, features:Optional[torch.Tensor]) ->tuple[torch.Tensor, torch.Tensor]:
         '''
@@ -59,27 +59,27 @@ class SAModule(nn.Module):
         return new_xyz, new_features
     
 class CostVolume(nn.Module):
-    def __init__(self, nsample, nsample_q, in_channel1, in_channel2, mlp1, mlp2, m): # mlp[-1]=mlp1[-1]=mlp2[-1]
+    def __init__(self, in_channel1, in_channel2, mlp1, mlp2, m): # mlp[-1]=mlp1[-1]=mlp2[-1]
         super(CostVolume, self).__init__()
-        self.nsample = nsample
+        # self.nsample = nsample
         self.nsample_q = m#nsample_q
         self.m = m
         # self.in_channel = [in_channel1, in_channel2, 10]
 
         mlp1_spec = [in_channel1+in_channel2+10]+mlp1
-        self.mlp_convs = SharedMLP(mlp1_spec, bn=True, init=nn.init.xavier_uniform_)
+        self.mlp_convs = SharedMLP(mlp1_spec)
         mlp_spec_xyz_1 = [10, mlp1[-1]]
-        self.mlp_conv_xyz_1 = SharedMLP(mlp_spec_xyz_1, bn=True, init=nn.init.xavier_uniform_)
+        self.mlp_conv_xyz_1 = SharedMLP(mlp_spec_xyz_1)
         mlp_spec_xyz_2 = [10, mlp2[-1]]
-        self.mlp_conv_xyz_2 = SharedMLP(mlp_spec_xyz_2, bn=True, init=nn.init.xavier_uniform_)
+        self.mlp_conv_xyz_2 = SharedMLP(mlp_spec_xyz_2)
 
         # concatenating 3D Euclidean space encoding and first flow embeddings
         last_channel2 = mlp1_spec[-1] * 2 
         mlp2_spec = [last_channel2] + mlp2
-        self.mlp2_convs = SharedMLP(mlp2_spec, bn=True, init=torch.nn.init.xavier_uniform_)
+        self.mlp2_convs = SharedMLP(mlp2_spec)
         last_channel3 = mlp1_spec[-1] * 2 + in_channel1   
         mlp3_spec = [last_channel3] + mlp2
-        self.mlp3_convs = SharedMLP(mlp3_spec, bn=True, init=torch.nn.init.xavier_uniform_)
+        self.mlp3_convs = SharedMLP(mlp3_spec)
         self.out_channel = mlp3_spec[-1]
     
     def forward(self, xyz1:torch.Tensor, feature1:torch.Tensor, xyz2:torch.Tensor, feature2:torch.Tensor):
@@ -95,8 +95,8 @@ class CostVolume(nn.Module):
         '''
         B, _, S = xyz1.shape
         n = int(S/self.m)
-        xyz1_t = xyz1.permute(0, 2, 1).contiguous() # [B, S, 3]
-        xyz2_t = xyz2.permute(0, 2, 1).contiguous() # [B, N, 3]
+        # xyz1_t = xyz1.permute(0, 2, 1).contiguous() # [B, S, 3]
+        # xyz2_t = xyz2.permute(0, 2, 1).contiguous() # [B, N, 3]
         
         ### -----------------------------------------------------------
         ### FIRST AGGREGATE
@@ -171,7 +171,7 @@ class MaskPredictor(nn.Module):
         super().__init__()
         # self.in_channel = [in_channel]
         mlp_spec = [in_channel]+mlp
-        self.mlp_convs = SharedMLP(mlp_spec, bn=True, init=nn.init.xavier_uniform_)
+        self.mlp_convs = SharedMLP(mlp_spec)
         # self.out_channel = mlp_spec[-1]
 
     def forward(self, feature1:torch.Tensor, cost_volume:torch.Tensor, upsampled_feat=None):
@@ -338,6 +338,7 @@ class PosePredictor(nn.Module):
 class RecoverPCD(nn.Module):
     def __init__(self, num_channel:int, n_arc:int=10):
         super().__init__()
+        self.narc = n_arc
         # self.cost_volume_encoder = nn.Sequential(
         #     nn.Linear(in_features=in_channel, out_features=256),
         #     nn.ReLU(),
@@ -345,20 +346,25 @@ class RecoverPCD(nn.Module):
         #     nn.ReLU(),
         #     nn.Linear(in_features=256, out_features=out_channel)
         # )
-        self.pcd_decoder1 = nn.Sequential(
-            nn.Conv1d(num_channel+2, 256, kernel_size=1),
-            nn.ReLU(),
-            nn.Conv1d(256, 128, kernel_size=1),
-            nn.ReLU(),
-            nn.Conv1d(128, 3, kernel_size=1)
-        )
-        self.pcd_decoder2 = nn.Sequential(
-            nn.Conv1d(num_channel+3, 256, kernel_size=1),
-            nn.ReLU(),
-            nn.Conv1d(256, 128, kernel_size=1),
-            nn.ReLU(),
-            nn.Conv1d(128, 3, kernel_size=1)
-        )
+        # self.pcd_decoder1 = nn.Sequential(
+        #     nn.Conv1d(num_channel+2, 256, kernel_size=1),
+        #     nn.GroupNorm(1, 256),
+        #     nn.LeakyReLU(),
+        #     nn.Conv1d(256, 128, kernel_size=1),
+        #     nn.GroupNorm(1, 128),
+        #     nn.LeakyReLU(),
+        #     nn.Conv1d(128, 128, kernel_size=1),
+        #     nn.GroupNorm(1, 128),
+        #     nn.LeakyReLU(),
+        #     nn.Conv1d(128, 1, kernel_size=1)
+        # )
+        # self.pcd_decoder2 = nn.Sequential(
+        #     nn.Conv1d(num_channel+3, 256, kernel_size=1),
+        #     nn.ReLU(),
+        #     nn.Conv1d(256, 128, kernel_size=1),
+        #     nn.ReLU(),
+        #     nn.Conv1d(128, 3, kernel_size=1)
+        # )
         # self.weights_decoder = nn.Sequential(
         #     nn.Conv1d(num_channel+2, 256, kernel_size=1),
         #     nn.ReLU(),
@@ -368,6 +374,18 @@ class RecoverPCD(nn.Module):
         #     nn.ReLU(),
         #     nn.Conv1d(128, n_arc, kernel_size=1)
         # )
+        self.phi_decoder = nn.Sequential(
+            nn.Conv2d(num_channel+2, 512, kernel_size=(self.narc, 1)),
+            nn.GroupNorm(1, 512),
+            nn.LeakyReLU(),
+            nn.Conv2d(512, 256, kernel_size=(1, 1)),
+            nn.GroupNorm(1, 256),
+            nn.LeakyReLU(),
+            nn.Conv2d(256, 128, kernel_size=(1, 1)),
+            nn.GroupNorm(1, 128),
+            nn.LeakyReLU(),
+            nn.Conv2d(128, 1, kernel_size=(1, 1))
+        )
         self._init_weights()
     
     def _init_weights(self):
@@ -375,20 +393,24 @@ class RecoverPCD(nn.Module):
         #     if isinstance(m, nn.Linear):
         #         nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
         #         nn.init.constant_(m.bias, 0.0)
-        for m in self.pcd_decoder1:
-            if isinstance(m, nn.Conv1d):
-                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
-                nn.init.constant_(m.bias, 0.0)
-        for m in self.pcd_decoder2:
-            if isinstance(m, nn.Conv1d):
-                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
-                nn.init.constant_(m.bias, 0.0)
+        for layer in self.phi_decoder:
+            if isinstance(layer, nn.Conv2d):
+                if layer == self.phi_decoder[-1]:
+                    nn.init.uniform_(layer.weight, -1e-3, 1e-3)
+                    nn.init.uniform_(layer.bias, -math.radians(6), math.radians(6))
+                else:
+                    nn.init.xavier_normal_(layer.weight)
+                    nn.init.normal_(layer.bias, mean=0.0, std=0.01)
+        # for m in self.pcd_decoder2:
+        #     if isinstance(m, nn.Conv1d):
+        #         nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+        #         nn.init.constant_(m.bias, 0.0)
         # for m in self.weights_decoder:
         #     if isinstance(m, nn.Conv1d):
         #         nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
         #         nn.init.constant_(m.bias, 0.0)
  
-    def forward(self, embedding:torch.Tensor, numpoints:int, rtheta:torch.Tensor):
+    def forward(self, embedding:torch.Tensor, numpoints:int, rtheta1:torch.Tensor):
         """
         input:
         embedding: [B, C, 1]
@@ -398,23 +420,41 @@ class RecoverPCD(nn.Module):
         return:
         recover points: [B, numpoints, 3]
         """        
-        embedding = torch.tile(embedding, [1, 1, numpoints])
-        # # 2d grid
+        # embedding = torch.tile(embedding, [1, 1, numpoints])
+        # 2d grid
         # u = torch.sin(torch.arange(1, numpoints+1)).unsqueeze(1) # sin(1), sin(2), ... , sin(numpoints)
         # v = torch.cos(torch.arange(1, numpoints+1)).unsqueeze(1)
         # grid = torch.cat((u, v), dim=1).to(embedding.device).unsqueeze(0) # [1, numpoints, 2]
         # B = embedding.shape[0]
         # grid = torch.tile(grid, [B, 1, 1]).permute(0, 2, 1) # [B, 2, numpoints]
-        rtheta = torch.permute(rtheta, (0, 2, 1)) # [B, 2, numpoints]
-        feat1 = torch.cat((rtheta, embedding), dim=1) # [B, 2+Cout, numpoints]
+        # rtheta1 = torch.permute(rtheta1, (0, 2, 1)) # [B, 2, numpoints]
+        feat1 = torch.cat((rtheta1, embedding), dim=1) # [B, 2+Cout, numpoints]
 
-        folding1 = self.pcd_decoder1(feat1) # [B, 3, numpoints]
-        feat2 = torch.cat((folding1, embedding), dim=1) # [B, 2+Cout, numpoints]
-        points_out = self.pcd_decoder2(feat2) # [B, 3, numpoints]
-        points_out = torch.permute(points_out, (0, 2, 1)) # [B, numpoints, 3]
+        # folding1 = self.pcd_decoder1(feat1) # [B, 3, numpoints]
+        # feat2 = torch.cat((folding1, embedding), dim=1) # [B, 2+Cout, numpoints]
+        # points_out = self.pcd_decoder2(feat2) # [B, 3, numpoints]
+        # points_out = torch.permute(points_out, (0, 2, 1)) # [B, numpoints, 3]
 
         # weights = self.weights_decoder(feat1) # [B, n_arc, numpoints]
         # weights = torch.permute(weights, (0, 2, 1)) # [B, numpoints, n_arc]
         # weights = F.softmax(weights, dim=2)
+        phi1_pre = self.phi_decoder(feat1).squeeze(2)
+        # phi1_pre = torch.clamp(phi1_pre, min=-math.radians(6), max=math.radians(6))
+        rthetaphi1 = torch.cat((rtheta1[:, :, 0, :], phi1_pre), dim=1).permute(0, 2, 1)
+        x1 = rthetaphi1[:, :, 0]*torch.cos(rthetaphi1[:, :, 1])*torch.cos(rthetaphi1[:, :, 2])
+        y1 = rthetaphi1[:, :, 0]*torch.sin(rthetaphi1[:, :, 1])*torch.cos(rthetaphi1[:, :, 2])
+        z1 = rthetaphi1[:, :, 0]*torch.sin(rthetaphi1[:, :, 2])
+        points_out1 = torch.stack((x1, y1, z1), dim=2)
 
-        return points_out #weights
+        # rtheta2 = torch.permute(rtheta2, (0, 2, 1)) # [B, 2, numpoints]
+        # feat2 = torch.cat((rtheta2, embedding), dim=1) # [B, 2+Cout, numpoints]
+        # phi2_pre = self.pcd_decoder1(feat2)
+        # rthetaphi2 = torch.cat((rtheta2, phi2_pre), dim=1).permute(0, 2, 1)
+        # x2 = rthetaphi2[:, :, 0]*torch.cos(rthetaphi2[:, :, 1])*torch.cos(rthetaphi2[:, :, 2])
+        # y2 = rthetaphi2[:, :, 0]*torch.sin(rthetaphi2[:, :, 1])*torch.cos(rthetaphi2[:, :, 2])
+        # z2 = rthetaphi2[:, :, 0]*torch.sin(rthetaphi2[:, :, 2])
+        # points_out2 = torch.stack((x2, y2, z2), dim=2)
+
+        phi1_deg = phi1_pre*180/torch.pi
+
+        return points_out1, phi1_deg.permute(0, 2, 1).squeeze(2) #weights

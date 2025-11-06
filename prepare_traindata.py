@@ -15,12 +15,12 @@ import os
 N = 200 # The number of (r, theta) pairs
 n_arc = 10
 theta_range = math.radians(60)
-phi_range = math.radians(12)
+phi_range = math.radians(6)
 N_seeds = 80 # The number of seeds to generate voronoi diagram
 keep_ratio = 0.4 # rate to keep polygons
 point_noise_range = 0.005 # 0.5cm
-rot_noise_range = math.radians(15)
-trans_noise_range = 0.25 # 5cm
+rot_noise_range = math.radians(10)
+trans_noise_range = 0.05 # 5cm
 rng = np.random.default_rng(None)
 
 def random_in_poly(poly: Polygon, n):
@@ -115,12 +115,12 @@ def produce_data():
     r_theta = np.stack((rs[mask], thetas[mask]), axis=1) # [trueN, 2]
     r_theta = sort_rt(r_theta) # sorted
     r_theta = np.expand_dims(r_theta, axis=1).repeat(n_arc, axis=1) # [trueN, n_arc, 2]
-    phi = np.linspace(-phi_range/2, phi_range/2, n_arc).reshape((1, n_arc, 1))
-    phi = np.repeat(phi, repeats=trueN, axis=0) # [trueN, n_arc, 1]
+    phi_base = np.linspace(-phi_range, phi_range, n_arc).reshape((1, n_arc, 1))
+    phi = np.repeat(phi_base, repeats=trueN, axis=0) # [trueN, n_arc, 1]
     r_theta_phi = np.concatenate((r_theta, phi), axis=2) # [trueN, n_arc, 3]
     r_theta_phi_c = r_theta_phi.reshape((-1, 3)) # copy
 
-    pcd1 = po2car(r_theta_phi_c) # pcd1
+    pcd1 = po2car(r_theta_phi_c).reshape((trueN, n_arc, 4)) # pcd1
 
     # sample on the arc
     selectidx = np.clip(np.round(rng.normal(n_arc/2, n_arc/6, trueN)), 0, n_arc-1).astype(int)
@@ -146,9 +146,21 @@ def produce_data():
     # complete arc in 2
     rs_2 = np.linalg.norm(select_pts_in2[:, :3], axis=1)
     thetas_2 = np.arctan2(select_pts_in2[:, 1], select_pts_in2[:, 0])
+    phis_2 = np.arcsin(select_pts_in2[:, 2]/rs_2)
+    
+    r2_mask = rs_2 <= 1
+    theta2_mask = np.logical_and(thetas_2>=-theta_range, thetas_2<=theta_range)
+    phi2_mask = np.logical_and(phis_2>=-phi_range, phis_2<=phi_range)
+    mask2 = np.logical_and(r2_mask, np.logical_and(theta2_mask, phi2_mask))
+    num_mask2 = mask2.sum()
+
+    rs_2 = rs_2[mask2]
+    thetas_2 = thetas_2[mask2]
+
     r_theta_2 = np.stack((rs_2, thetas_2), axis=1) # [trueN, 2]
     r_theta_2 = np.expand_dims(r_theta_2, axis=1).repeat(n_arc, axis=1) # [trueN, n_arc, 2]
-    r_theta_phi_2 = np.concatenate((r_theta_2, phi), axis=2) # [trueN, n_arc, 3]
+    phi_new = np.repeat(phi_base, repeats=num_mask2, axis=0)
+    r_theta_phi_2 = np.concatenate((r_theta_2, phi_new), axis=2) # [trueN, n_arc, 3]
     r_theta_phi_2 = r_theta_phi_2.reshape((-1, 3))
 
     pcd2 = po2car(r_theta_phi_2)
@@ -170,6 +182,11 @@ def produce_data():
     # ax2.set_thetamax(60)
     # ax2.set_rmax(1)
 
+    pcd1 = pcd1[mask2, :, :].reshape((-1, 4))
+    select_pts_in1_copy = select_pts_in1_copy[mask2]
+    select_pts_in2 = select_pts_in2[mask2]
+    r_theta_phi_c = (r_theta_phi_c.reshape((-1, n_arc, 3)))[mask2, :].reshape(-1, 3)
+
     return pcd1, pcd2, pose, select_pts_in1_copy, select_pts_in2, r_theta_phi_c, r_theta_phi_2
 
 if __name__ == '__main__':
@@ -183,7 +200,7 @@ if __name__ == '__main__':
     Select_pts_in2 = []
     for i in trange(15000):
         pcd1, pcd2, pose, select_pts_in1, select_pts_in2, rt1, rt2 = produce_data()
-        if len(pcd1) <= 2048:
+        if len(pcd1) <= 500:
             continue
         PCD1.append(pcd1[:, :3])
         PCD2.append(pcd2[:, :3])
@@ -209,5 +226,5 @@ if __name__ == '__main__':
         "select_pts_in1": Select_pts_in1,
         "select_pts_in2": Select_pts_in2
     }
-    with open(os.path.join(savepath, 'data_feature_r_theta.pkl'), 'wb') as file:
+    with open(os.path.join(savepath, 'data_feature_r_theta1.pkl'), 'wb') as file:
         pickle.dump(data, file, protocol=3)
